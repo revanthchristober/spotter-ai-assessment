@@ -143,18 +143,31 @@ def plan_fuel_stops(coordinates, stations, max_range=500, mpg=10, route_distance
     previous = [None] * n
     costs[0] = 0.0
     stop_counts[0] = 0
-    average_price = (sum(s.price_per_gallon for s in stations) / len(stations)) if stations else 0.0
-    cheapest_route_price = min((station.price_per_gallon for _, station in compact), default=average_price)
+    origin = coordinates[0]
+    start_station = min(
+        stations,
+        key=lambda station: _segment_miles(
+            origin, (station.longitude, station.latitude)
+        ),
+    )
+    start_price = start_station.price_per_gallon
+    start_price_source = {
+        "name": start_station.name,
+        "city": start_station.city,
+        "state": start_station.state,
+        "price_per_gallon": round(start_price, 3),
+        "distance_from_start_miles": round(
+            _segment_miles(origin, (start_station.longitude, start_station.latitude)), 1
+        ),
+    }
     for j in range(1, n):
         for i in range(j):
             leg = nodes[j][0] - nodes[i][0]
             if leg > max_range:
                 continue
-            # Starting with a full tank is assumed. Fuel used on a leg is priced at its departure stop.
-            if i == 0:
-                price = nodes[j][1].price_per_gallon if nodes[j][1] else cheapest_route_price
-            else:
-                price = nodes[i][1].price_per_gallon
+            # Starting fuel is priced at the route-origin estimate. Fuel for
+            # later legs is priced at the station where that leg begins.
+            price = start_price if i == 0 else nodes[i][1].price_per_gallon
             estimate = costs[i] + leg / mpg * price
             next_stops = stop_counts[i] + (0 if j == n - 1 else 1)
             if estimate < costs[j] or (math.isclose(estimate, costs[j]) and next_stops < stop_counts[j]):
@@ -169,7 +182,6 @@ def plan_fuel_stops(coordinates, stations, max_range=500, mpg=10, route_distance
             raise RouteServiceError("Could not build a fuel plan for this route.")
         if cursor not in (0, n - 1):
             mile, station = nodes[cursor]
-            selected.append({"mile_from_start": round(mile, 1), "name": station.name, "address": station.address, "city": station.city, "state": station.state, "price_per_gallon": round(station.price_per_gallon, 3), "coordinates": [station.longitude, station.latitude]})
+            selected.append({"mile_from_start": round(mile, 1), "name": station.name, "address": station.address, "city": station.city, "state": station.state, "price_per_gallon": round(station.price_per_gallon, 3), "coordinates": [station.longitude, station.latitude], "coordinates_are_city_estimates": True})
     selected.reverse()
-    return {"route_miles": round(total, 1), "fuel_stops": selected, "estimated_fuel_cost_usd": round(costs[-1], 2), "fuel_gallons": round(total / mpg, 2), "assumptions": ["Vehicle starts with a full tank with a 500-mile maximum range.", "Fuel use is 10 MPG.", "Total trip fuel is costed at selected route station prices; when no stop is needed, the lowest price found along the route is used.", "Station locations use Census city representative points; individual truck-stop coordinates were not supplied.", "Prices are used as supplied and may not reflect current prices."]}
-
+    return {"route_miles": round(total, 1), "fuel_stops": selected, "starting_fuel_price": start_price_source, "estimated_fuel_cost_usd": round(costs[-1], 2), "fuel_gallons": round(total / mpg, 2), "assumptions": ["Vehicle starts with a full tank with a 500-mile maximum range.", "Fuel use is 10 MPG.", "Starting fuel is priced using the nearest mapped assessment station to the start; later fuel is priced at each stop where that leg begins.", "Station locations use Census city representative points; individual truck-stop coordinates were not supplied.", "Prices are used as supplied and may not reflect current prices."]}

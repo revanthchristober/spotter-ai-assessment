@@ -47,9 +47,26 @@ class PlannerTests(SimpleTestCase):
         self.assertEqual(result["fuel_stops"], [])
         self.assertGreater(result["estimated_fuel_cost_usd"], 0)
 
+    def test_later_cheap_station_does_not_price_earlier_miles(self):
+        miles_per_longitude_degree = 69.0934
+        route = [[0.0, 0.0], [10.0, 0.0]]
+        stations = [
+            SimpleNamespace(longitude=100 / miles_per_longitude_degree, latitude=0.0, price_per_gallon=4.0, name="Start-area price", address="", city="A", state="TX"),
+            SimpleNamespace(longitude=490 / miles_per_longitude_degree, latitude=0.0, price_per_gallon=1.0, name="Cheap far", address="", city="B", state="OK"),
+        ]
+
+        result = plan_fuel_stops(route, stations, max_range=500, mpg=10)
+
+        self.assertEqual([stop["name"] for stop in result["fuel_stops"]], ["Cheap far"])
+        self.assertAlmostEqual(result["estimated_fuel_cost_usd"], 216.1, places=1)
+
 class ApiTests(TestCase):
     def test_rejects_missing_location(self):
         response = self.client.post(reverse("route-plan"), data="{}", content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_rejects_json_that_is_not_an_object(self):
+        response = self.client.post(reverse("route-plan"), data="[]", content_type="application/json")
         self.assertEqual(response.status_code, 400)
 
     def test_route_endpoint_requires_post(self):

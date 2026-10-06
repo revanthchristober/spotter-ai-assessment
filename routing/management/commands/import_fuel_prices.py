@@ -35,10 +35,11 @@ class Command(BaseCommand):
         imported = missing = 0
         with source.open(newline="", encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
-                coords = places.get((normalize(row["City"]), row["State"]))
+                city, state = row["City"].strip(), row["State"].strip().upper()
+                coords = places.get((normalize(city), state))
                 if not coords:
                     missing += 1
                     continue
-                FuelStation.objects.update_or_create(opis_id=row["OPIS Truckstop ID"], defaults={"name": row["Truckstop Name"], "address": row["Address"], "city": row["City"], "state": row["State"], "price_per_gallon": float(row["Retail Price"]), "latitude": coords[0], "longitude": coords[1]})
+                FuelStation.objects.update_or_create(opis_id=row["OPIS Truckstop ID"].strip(), defaults={"name": row["Truckstop Name"].strip(), "address": row["Address"].strip(), "city": city, "state": state, "price_per_gallon": float(row["Retail Price"]), "latitude": coords[0], "longitude": coords[1]})
                 imported += 1
         self.stdout.write(self.style.SUCCESS(f"Imported {imported} located price rows ({FuelStation.objects.count()} unique station IDs); skipped {missing} unmatched cities."))

@@ -29,11 +29,11 @@ The import currently loads 7,040 of 8,151 price rows (6,194 unique station IDs).
 {"start": "Dallas, TX", "finish": "Atlanta, GA"}
 ```
 
-The response includes `route_miles`, `fuel_stops`, `estimated_fuel_cost_usd`, `fuel_gallons`, and `map` GeoJSON. Photon resolves the two input locations (two lookups), then one OSRM request returns the driving route. Station matching and fuel planning run locally. The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
+The response includes `route_miles`, `fuel_stops`, `starting_fuel_price`, `estimated_fuel_cost_usd`, `fuel_gallons`, and `map` GeoJSON. Photon resolves the two input locations with two parallel lookups, then one OSRM request returns the driving route. Station matching and fuel planning run locally. That is three external lookups per request. The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
 
 For the demo, import [`Spotter-Route-Demo.postman_collection.json`](Spotter-Route-Demo.postman_collection.json) into Postman and start the server at `http://127.0.0.1:8000`.
 
-Planning assumes the vehicle starts with a full 500-mile tank, gets 10 MPG, and can refuel at the supplied station prices. Prices come from the assessment CSV and are not refreshed. A 25-mile route corridor is used to account for city-centre station coordinates. Fuel cost estimates use route miles divided by MPG and station prices; exact stop positions, detours, and actual fuel purchase quantities cannot be known without station coordinates and current pricing.
+Planning assumes the vehicle starts with a full 500-mile tank, gets 10 MPG, and can refuel at the supplied station prices. The planner chooses the lowest estimated-cost sequence of route-side stops while keeping each leg within 500 road miles. It prices the initial leg using the nearest mapped assessment station to the start and later legs using the station where each leg begins. Prices come from the assessment CSV and are not refreshed. A 25-mile route corridor accounts for city-centre station coordinates. Exact stop positions, detours, and current prices cannot be known without individual station coordinates and updated prices.
 
 Set `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS` before deployment. Turn on `DJANGO_DEBUG=true` only for local debugging.
 
