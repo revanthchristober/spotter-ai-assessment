@@ -6,7 +6,11 @@ from routing.models import FuelStation
 
 def normalize(value):
     """Normalize a city name without removing meaningful words like 'City'."""
-    return re.sub(r"[^A-Z0-9]", "", value.strip().upper())
+    value = value.strip().upper()
+    value = re.sub(r"\bSAINT\b", "ST", value)
+    value = re.sub(r"\bMOUNT\b", "MT", value)
+    value = re.sub(r"\bFORT\b", "FT", value)
+    return re.sub(r"[^A-Z0-9]", "", value)
 
 
 def normalize_place_name(value):

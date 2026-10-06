@@ -12,6 +12,7 @@ class FuelImportNormalizationTests(SimpleTestCase):
         self.assertEqual(normalize("Oklahoma City"), "OKLAHOMACITY")
         self.assertEqual(normalize_place_name("Oklahoma City city"), "OKLAHOMACITY")
         self.assertEqual(normalize_place_name("Big Cabin town"), "BIGCABIN")
+        self.assertEqual(normalize("Saint Cloud"), normalize_place_name("St. Cloud city"))
 
 class PlannerTests(SimpleTestCase):
     def test_picks_cheaper_station_when_range_allows(self):
@@ -93,6 +94,13 @@ class GeocodingTests(SimpleTestCase):
         mock_get.return_value.json.return_value = {"features": [{"properties": {"countrycode": "US", "name": "Dallas", "state": "Texas"}, "geometry": {"coordinates": [-96.8, 32.8]}}]}
         self.assertEqual(geocode("Dallas, TX"), [-96.8, 32.8])
         self.assertEqual(mock_get.call_args.kwargs["params"]["countrycode"], "us")
+        self.assertEqual(mock_get.call_args.kwargs["params"]["layer"], "city")
+
+    @patch("routing.services.requests.get")
+    def test_accepts_a_us_street_address(self, mock_get):
+        mock_get.return_value.json.return_value = {"features": [{"properties": {"countrycode": "US", "name": "1600 Pennsylvania Avenue NW", "city": "Washington", "state": "District of Columbia"}, "geometry": {"coordinates": [-77.0365, 38.8977]}}]}
+        self.assertEqual(geocode("1600 Pennsylvania Avenue NW, Washington, DC"), [-77.0365, 38.8977])
+        self.assertNotIn("layer", mock_get.call_args.kwargs["params"])
 
     @patch("routing.services.requests.get")
     def test_rejects_non_us_geocode_result(self, mock_get):

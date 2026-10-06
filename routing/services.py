@@ -18,15 +18,21 @@ class RouteServiceError(Exception):
 
 def geocode(address):
     try:
-        response = requests.get(GEOCODER_URL, params={"q": f"{address}, USA", "limit": 10, "countrycode": "us", "layer": "city"}, headers={"User-Agent": USER_AGENT}, timeout=8)
+        parts = [part.strip() for part in address.split(",")]
+        street_like = bool(re.search(r"\d|\b(AVENUE|AVE|ROAD|RD|STREET|BOULEVARD|BLVD|HIGHWAY|HWY|ROUTE|DRIVE|LANE|EXIT|INTERSTATE)\b", parts[0], re.IGNORECASE))
+        params = {"q": f"{address}, USA", "limit": 10, "countrycode": "us"}
+        if not street_like:
+            params["layer"] = "city"
+        response = requests.get(GEOCODER_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=8)
         response.raise_for_status()
         features = response.json().get("features", [])
-        parts = [part.strip() for part in address.split(",")]
-        wanted_city = re.sub(r"[^a-z0-9]", "", parts[0].lower())
-        wanted_state = parts[-1].upper() if len(parts) > 1 else ""
-        if wanted_state in {"US", "USA", "UNITEDSTATES"} and len(parts) > 2:
-            wanted_state = parts[-2].upper()
-        accepted_state = STATE_NAMES.get(wanted_state, wanted_state)
+        state_names = {name.lower(): name for name in STATE_NAMES.values()}
+        final_part = parts[-1].upper() if len(parts) > 1 else ""
+        if final_part in {"US", "USA", "UNITED STATES", "UNITEDSTATES"} and len(parts) > 2:
+            final_part = parts[-2]
+        wanted_state = final_part.upper()
+        accepted_state = STATE_NAMES.get(wanted_state, state_names.get(final_part.lower(), final_part))
+        wanted_city = None if street_like else re.sub(r"[^a-z0-9]", "", parts[0].lower())
         matches = []
         for feature in features:
             props = feature.get("properties", {})

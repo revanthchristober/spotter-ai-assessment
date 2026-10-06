@@ -19,7 +19,7 @@ The import uses the supplied `fuel-prices-for-be-assessment.csv` and the include
 
 The assessment price attachment stays local and is excluded from GitHub. Place the CSV in the project root before running the import command.
 
-The import currently loads 7,040 of 8,151 price rows (6,194 unique station IDs). It skips 620 Canadian rows and 491 US rows whose city names are not in the included Census Gazetteer. The imported coordinates remain city-level estimates, not exact truck-stop locations.
+The import currently loads 7,117 of 8,151 price rows (6,261 unique station IDs). It skips 620 Canadian rows and 414 US rows whose city names are not in the included Census Gazetteer. The imported coordinates remain city-level estimates, not exact truck-stop locations.
 
 ## API
 
@@ -29,7 +29,7 @@ The import currently loads 7,040 of 8,151 price rows (6,194 unique station IDs).
 {"start": "Dallas, TX", "finish": "Atlanta, GA"}
 ```
 
-The response includes `route_miles`, `fuel_stops`, `starting_fuel_price`, `estimated_fuel_cost_usd`, `fuel_gallons`, and `map` GeoJSON. Photon resolves the two input locations with two parallel lookups, then one OSRM request returns the driving route. Station matching and fuel planning run locally. That is three external lookups per request. The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
+The response includes `route_miles`, `fuel_stops`, `starting_fuel_price`, `estimated_fuel_cost_usd`, `fuel_gallons`, and `map` GeoJSON. It accepts US city names and street addresses. Photon resolves the two input locations with two parallel lookups, then one OSRM request returns the driving route. Station matching and fuel planning run locally. That is three external lookups per request. The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
 
 For the demo, import [`Spotter-Route-Demo.postman_collection.json`](Spotter-Route-Demo.postman_collection.json) into Postman and start the server at `http://127.0.0.1:8000`.
 
@@ -43,7 +43,7 @@ Set `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS` before deployment. Turn on `D
 - [Photon](https://github.com/komoot/photon/blob/master/docs/api-v1.md): free city and address lookup backed by OpenStreetMap.
 - [US Census Gazetteer](https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.2025.html): city representative coordinates used locally.
 
-The local planner was timed with 6,000 imported station records and 2,000 route points: about 1.07 seconds in this workspace, excluding the three network lookups. Network response time depends on the public services.
+The local planner was timed once with 6,261 imported station records and 2,000 route points: about 0.16 seconds in this workspace, excluding the three network lookups. Network response time depends on the public services.
 
 ## Checks
 
