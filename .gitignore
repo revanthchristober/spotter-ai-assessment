@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+.venv/
+.env
+.DS_Store
+/fuel-prices-for-be-assessment.csv

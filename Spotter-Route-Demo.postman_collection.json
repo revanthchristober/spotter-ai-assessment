@@ -1,0 +1,28 @@
+{
+  "info": {
+    "name": "Spotter Fuel Route Planner",
+    "description": "Assessment demo: one route request returns the road line, fuel stops, distance, and estimated fuel cost.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Dallas to Atlanta",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Dallas, TX\",\n  \"finish\": \"Atlanta, GA\"\n}",
+          "options": {"raw": {"language": "json"}}
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route", ""]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [{"key": "base_url", "value": "http://127.0.0.1:8000"}]
+}
