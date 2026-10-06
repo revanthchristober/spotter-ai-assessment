@@ -4,8 +4,10 @@ A Django 6.1 API that returns a US road route, estimated fuel stops, total trip 
 
 ## Run locally
 
+Use Python 3.12 or newer for Django 6.1.
+
 ```sh
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
@@ -17,7 +19,7 @@ The import uses the supplied `fuel-prices-for-be-assessment.csv` and the include
 
 The assessment price attachment stays local and is excluded from GitHub. Place the CSV in the project root before running the import command.
 
-The import currently loads 6,828 of 8,151 price rows (6,000 unique station IDs). Some city names do not match the Gazetteer, and Canadian entries in the price file are outside the requested US coverage.
+The import currently loads 7,040 of 8,151 price rows (6,194 unique station IDs). It skips 620 Canadian rows and 491 US rows whose city names are not in the included Census Gazetteer. The imported coordinates remain city-level estimates, not exact truck-stop locations.
 
 ## API
 

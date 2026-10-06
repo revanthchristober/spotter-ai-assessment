@@ -2,8 +2,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from .management.commands.import_fuel_prices import normalize, normalize_place_name
 from .models import FuelStation
 from .services import RouteServiceError, geocode, plan_fuel_stops
+
+
+class FuelImportNormalizationTests(SimpleTestCase):
+    def test_preserves_city_as_part_of_a_real_city_name(self):
+        self.assertEqual(normalize("Oklahoma City"), "OKLAHOMACITY")
+        self.assertEqual(normalize_place_name("Oklahoma City city"), "OKLAHOMACITY")
+        self.assertEqual(normalize_place_name("Big Cabin town"), "BIGCABIN")
 
 class PlannerTests(SimpleTestCase):
     def test_picks_cheaper_station_when_range_allows(self):

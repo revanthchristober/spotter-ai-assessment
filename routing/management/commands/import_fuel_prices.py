@@ -5,9 +5,15 @@ from django.core.management.base import BaseCommand, CommandError
 from routing.models import FuelStation
 
 def normalize(value):
+    """Normalize a city name without removing meaningful words like 'City'."""
+    return re.sub(r"[^A-Z0-9]", "", value.strip().upper())
+
+
+def normalize_place_name(value):
+    """Remove Census administrative suffixes from Gazetteer place labels."""
     value = value.strip().upper()
     value = re.sub(r"\s+(CITY|TOWN|VILLAGE|CDP|MUNICIPALITY|BOROUGH|PLANTATION)$", "", value)
-    return re.sub(r"[^A-Z0-9]", "", value)
+    return normalize(value)
 
 class Command(BaseCommand):
     help = "Import fuel prices and attach approximate city-centre coordinates from Census Gazetteer places."
@@ -25,7 +31,7 @@ class Command(BaseCommand):
             rows = csv.DictReader(f, fieldnames=header, delimiter="|")
             places = {}
             for row in rows:
-                places[(normalize(row["NAME"]), row["USPS"]) ] = (float(row["INTPTLAT"]), float(row["INTPTLONG"]))
+                places[(normalize_place_name(row["NAME"]), row["USPS"])] = (float(row["INTPTLAT"]), float(row["INTPTLONG"]))
         imported = missing = 0
         with source.open(newline="", encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):

@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 from .models import FuelStation
@@ -11,8 +12,11 @@ def plan_route(request):
         start_name, finish_name = payload.get("start"), payload.get("finish")
         if not isinstance(start_name, str) or not start_name.strip() or not isinstance(finish_name, str) or not finish_name.strip():
             return JsonResponse({"error": "Provide non-empty 'start' and 'finish' US locations."}, status=400)
-        start = geocode(start_name)
-        finish = geocode(finish_name)
+        # Resolve both endpoints at once, keeping the external lookup count at two.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            start_future = pool.submit(geocode, start_name)
+            finish_future = pool.submit(geocode, finish_name)
+            start, finish = start_future.result(), finish_future.result()
         coordinates, road_miles = fetch_route(start, finish)
         stations = FuelStation.objects.filter(latitude__isnull=False, longitude__isnull=False)
         plan = plan_fuel_stops(coordinates, stations, route_distance_miles=road_miles)
