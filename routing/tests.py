@@ -1,10 +1,16 @@
 from types import SimpleNamespace
 from unittest.mock import patch
+import csv
+from io import StringIO
+import tempfile
+from pathlib import Path
+from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from django.core.management import call_command
 from .management.commands.import_fuel_prices import normalize, normalize_place_name
 from .models import FuelStation
-from .services import RouteServiceError, geocode, plan_fuel_stops
+from .services import RouteServiceError, fetch_route, geocode, plan_fuel_stops
 
 
 class FuelImportNormalizationTests(SimpleTestCase):
@@ -12,7 +18,51 @@ class FuelImportNormalizationTests(SimpleTestCase):
         self.assertEqual(normalize("Oklahoma City"), "OKLAHOMACITY")
         self.assertEqual(normalize_place_name("Oklahoma City city"), "OKLAHOMACITY")
         self.assertEqual(normalize_place_name("Big Cabin town"), "BIGCABIN")
+        self.assertEqual(normalize_place_name("Dundee township"), "DUNDEE")
         self.assertEqual(normalize("Saint Cloud"), normalize_place_name("St. Cloud city"))
+
+    def test_matches_city_names_with_accents(self):
+        self.assertEqual(normalize("Cañon City"), normalize("Canon City"))
+
+
+class FuelImportTests(TestCase):
+    def test_uses_geo_names_fallback_and_skips_non_us_rows(self):
+        FuelStation.objects.create(opis_id="stale", name="Old data", city="Old", state="TX", price_per_gallon=3.0)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "prices.csv"
+            fallback = root / "fallbacks.csv"
+            subdivisions = root / "subdivisions.csv"
+            gazetteer = root / "gazetteer.txt"
+            with source.open("w", newline="") as file:
+                writer = csv.DictWriter(file, fieldnames=["City", "State", "OPIS Truckstop ID", "Truckstop Name", "Address", "Retail Price"])
+                writer.writeheader()
+                writer.writerow({"City": "Cañon City", "State": "CO", "OPIS Truckstop ID": "us-1", "Truckstop Name": "US stop", "Address": "1 Main St", "Retail Price": "3.25"})
+                writer.writerow({"City": "Toronto", "State": "ON", "OPIS Truckstop ID": "ca-1", "Truckstop Name": "Canadian stop", "Address": "1 Main St", "Retail Price": "4.25"})
+                writer.writerow({"City": "Unknown", "State": "CO", "OPIS Truckstop ID": "us-2", "Truckstop Name": "Unmatched stop", "Address": "2 Main St", "Retail Price": "3.50"})
+                writer.writerow({"City": "Dundee", "State": "IL", "OPIS Truckstop ID": "us-3", "Truckstop Name": "Town stop", "Address": "3 Main St", "Retail Price": "3.75"})
+            with fallback.open("w", newline="") as file:
+                writer = csv.DictWriter(file, fieldnames=["city", "state", "latitude", "longitude", "geoname_id", "geonames_name", "feature_code"])
+                writer.writeheader()
+                writer.writerow({"city": "Canon City", "state": "CO", "latitude": "38.44", "longitude": "-105.22", "geoname_id": "1", "geonames_name": "Cañon City", "feature_code": "PPL"})
+            with subdivisions.open("w", newline="") as file:
+                writer = csv.DictWriter(file, fieldnames=["city", "state", "latitude", "longitude", "geoid", "gazetteer_name", "function_status"])
+                writer.writeheader()
+                writer.writerow({"city": "Dundee", "state": "IL", "latitude": "42.11", "longitude": "-88.30", "geoid": "1", "gazetteer_name": "Dundee township", "function_status": "A"})
+            gazetteer.write_text("USPS|NAME|INTPTLAT|INTPTLONG\nCO|Other Place|40.0|-105.0\n")
+
+            output = StringIO()
+            call_command("import_fuel_prices", str(source), gazetteer=str(gazetteer), subdivisions=str(subdivisions), fallbacks=str(fallback), stdout=output)
+
+        station = FuelStation.objects.get(opis_id="us-1")
+        self.assertAlmostEqual(station.latitude, 38.44)
+        self.assertAlmostEqual(station.longitude, -105.22)
+        self.assertEqual(station.coordinate_source, "geonames_city")
+        town_station = FuelStation.objects.get(opis_id="us-3")
+        self.assertEqual(town_station.coordinate_source, "census_subdivision")
+        self.assertAlmostEqual(town_station.latitude, 42.11)
+        self.assertEqual(FuelStation.objects.count(), 2)
+        self.assertIn("skipped 1 non-US rows and 1 US rows", output.getvalue())
 
 class PlannerTests(SimpleTestCase):
     def test_picks_cheaper_station_when_range_allows(self):
@@ -89,6 +139,9 @@ class ApiTests(TestCase):
         self.assertEqual(mock_route.call_count, 1)
 
 class GeocodingTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
     @patch("routing.services.requests.get")
     def test_returns_exact_us_city_match(self, mock_get):
         mock_get.return_value.json.return_value = {"features": [{"properties": {"countrycode": "US", "name": "Dallas", "state": "Texas"}, "geometry": {"coordinates": [-96.8, 32.8]}}]}
@@ -107,3 +160,25 @@ class GeocodingTests(SimpleTestCase):
         mock_get.return_value.json.return_value = {"features": [{"properties": {"countrycode": "CA", "name": "Toronto", "state": "Ontario"}, "geometry": {"coordinates": [-79.4, 43.7]}}]}
         with self.assertRaisesRegex(RouteServiceError, "Could not find a US location"):
             geocode("Toronto, ON")
+
+    @patch("routing.services.requests.get")
+    def test_reuses_cached_us_city_lookup(self, mock_get):
+        mock_get.return_value.json.return_value = {"features": [{"properties": {"countrycode": "US", "name": "Dallas", "state": "Texas"}, "geometry": {"coordinates": [-96.8, 32.8]}}]}
+        first = geocode("Dallas, TX")
+        second = geocode(" Dallas, TX ")
+        self.assertEqual(first, second)
+        self.assertEqual(mock_get.call_count, 1)
+
+
+class RouteCachingTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch("routing.services.requests.get")
+    def test_reuses_cached_route_geometry(self, mock_get):
+        mock_get.return_value.json.return_value = {"code": "Ok", "routes": [{"geometry": {"coordinates": [[-96.8, 32.8], [-84.4, 33.7]]}, "distance": 100_000}]}
+        start, finish = [-96.8, 32.8], [-84.4, 33.7]
+        first = fetch_route(start, finish)
+        second = fetch_route(start, finish)
+        self.assertEqual(first, second)
+        self.assertEqual(mock_get.call_count, 1)

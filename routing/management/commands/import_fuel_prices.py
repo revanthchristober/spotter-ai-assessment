@@ -1,12 +1,15 @@
 import csv
 import re
+import unicodedata
 from pathlib import Path
+from django.db import transaction
 from django.core.management.base import BaseCommand, CommandError
 from routing.models import FuelStation
 
 def normalize(value):
     """Normalize a city name without removing meaningful words like 'City'."""
-    value = value.strip().upper()
+    value = unicodedata.normalize("NFKD", value.strip().upper())
+    value = "".join(character for character in value if not unicodedata.combining(character))
     value = re.sub(r"\bSAINT\b", "ST", value)
     value = re.sub(r"\bMOUNT\b", "MT", value)
     value = re.sub(r"\bFORT\b", "FT", value)
@@ -16,34 +19,77 @@ def normalize(value):
 def normalize_place_name(value):
     """Remove Census administrative suffixes from Gazetteer place labels."""
     value = value.strip().upper()
-    value = re.sub(r"\s+(CITY|TOWN|VILLAGE|CDP|MUNICIPALITY|BOROUGH|PLANTATION)$", "", value)
+    value = re.sub(r"\s+(CITY|TOWN|TOWNSHIP|VILLAGE|CDP|MUNICIPALITY|BOROUGH|PLANTATION|CCD|MCD)$", "", value)
     return normalize(value)
 
 class Command(BaseCommand):
-    help = "Import fuel prices and attach approximate city-centre coordinates from Census Gazetteer places."
+    help = "Import U.S. fuel prices and attach representative city coordinates from public gazetteers."
 
     def add_arguments(self, parser):
         parser.add_argument("csv_path", nargs="?", default="fuel-prices-for-be-assessment.csv")
         parser.add_argument("--gazetteer", default="data/2025_Gaz_place_national.txt")
+        parser.add_argument("--subdivisions", default="data/census_subdivision_fallbacks.csv")
+        parser.add_argument("--fallbacks", default="data/geonames_city_fallbacks.csv")
 
     def handle(self, *args, **opts):
-        source, gaz_path = Path(opts["csv_path"]), Path(opts["gazetteer"])
-        if not source.exists() or not gaz_path.exists():
-            raise CommandError("CSV or Census Gazetteer file not found.")
+        source, gaz_path, subdivision_path, fallback_path = (
+            Path(opts["csv_path"]),
+            Path(opts["gazetteer"]),
+            Path(opts["subdivisions"]),
+            Path(opts["fallbacks"]),
+        )
+        if not source.exists() or not gaz_path.exists() or not subdivision_path.exists() or not fallback_path.exists():
+            raise CommandError("CSV, Census Gazetteer, or city coordinate fallback file not found.")
         with gaz_path.open(encoding="utf-8") as f:
             header = f.readline().strip().split("|")
             rows = csv.DictReader(f, fieldnames=header, delimiter="|")
             places = {}
             for row in rows:
                 places[(normalize_place_name(row["NAME"]), row["USPS"])] = (float(row["INTPTLAT"]), float(row["INTPTLONG"]))
-        imported = missing = 0
+        with fallback_path.open(encoding="utf-8", newline="") as f:
+            fallbacks = {
+                (normalize(row["city"]), row["state"].upper()): (
+                    float(row["latitude"]), float(row["longitude"])
+                )
+                for row in csv.DictReader(f)
+            }
+        with subdivision_path.open(encoding="utf-8", newline="") as f:
+            subdivisions = {
+                (normalize(row["city"]), row["state"].upper()): (
+                    float(row["latitude"]), float(row["longitude"])
+                )
+                for row in csv.DictReader(f)
+            }
+        us_states = set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split())
+        imported = missing_us = outside_us = 0
+        imported_ids = set()
         with source.open(newline="", encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
+            price_rows = list(csv.DictReader(f))
+        with transaction.atomic():
+            for row in price_rows:
                 city, state = row["City"].strip(), row["State"].strip().upper()
                 coords = places.get((normalize(city), state))
-                if not coords:
-                    missing += 1
+                coordinate_source = "census_city"
+                if state not in us_states:
+                    outside_us += 1
                     continue
-                FuelStation.objects.update_or_create(opis_id=row["OPIS Truckstop ID"].strip(), defaults={"name": row["Truckstop Name"].strip(), "address": row["Address"].strip(), "city": city, "state": state, "price_per_gallon": float(row["Retail Price"]), "latitude": coords[0], "longitude": coords[1]})
+                if coords is None:
+                    coords = subdivisions.get((normalize(city), state))
+                    if coords is not None:
+                        coordinate_source = "census_subdivision"
+                if coords is None:
+                    coords = fallbacks.get((normalize(city), state))
+                    if coords is not None:
+                        coordinate_source = "geonames_city"
+                if not coords:
+                    missing_us += 1
+                    continue
+                opis_id = row["OPIS Truckstop ID"].strip()
+                FuelStation.objects.update_or_create(opis_id=opis_id, defaults={"name": row["Truckstop Name"].strip(), "address": row["Address"].strip(), "city": city, "state": state, "price_per_gallon": float(row["Retail Price"]), "latitude": coords[0], "longitude": coords[1], "coordinate_source": coordinate_source})
+                imported_ids.add(opis_id)
                 imported += 1
-        self.stdout.write(self.style.SUCCESS(f"Imported {imported} located price rows ({FuelStation.objects.count()} unique station IDs); skipped {missing} unmatched cities."))
+            FuelStation.objects.exclude(opis_id__in=imported_ids).delete()
+        self.stdout.write(self.style.SUCCESS(
+            f"Imported {imported} US price rows ({FuelStation.objects.count()} unique station IDs); "
+            f"skipped {outside_us} non-US rows and {missing_us} US rows without a matched city coordinate."
+        ))

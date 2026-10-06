@@ -1,0 +1,11 @@
+city,state,latitude,longitude,geoid,gazetteer_name,function_status
+Baileyville,ME,45.182325,-67.441681,2302902480,Baileyville town,A
+Corinth,ME,44.980473,-69.010748,2301914380,Corinth town,A
+Crescent,PA,40.555653,-80.228561,4200317048,Crescent township,A
+Derby,VT,44.951696,-72.136303,5001917350,Derby town,A
+Dundee,IL,42.110435,-88.301351,1708921046,Dundee township,A
+East Lyme,CT,41.356068,-72.229843,0918023400,East Lyme town,A
+Edison,NJ,40.504396,-74.348843,3402320230,Edison township,A
+Ludlow,MA,42.183577,-72.457812,2501337175,Ludlow town,A
+Pennsauken,NJ,39.968368,-75.057851,3400757660,Pennsauken township,A
+Willington,CT,41.897267,-72.251848,0911085950,Willington town,A

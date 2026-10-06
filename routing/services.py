@@ -1,7 +1,9 @@
 """Route calculation and fuel-stop planning; external calls are kept to three."""
 import math
 import re
+import hashlib
 import requests
+from django.core.cache import cache
 
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 GEOCODER_URL = "https://photon.komoot.io/api/"
@@ -17,6 +19,17 @@ class RouteServiceError(Exception):
 
 
 def geocode(address):
+    normalized_address = re.sub(r"\s+", " ", address.strip()).casefold()
+    cache_key = "spotter:geocode:" + hashlib.sha256(normalized_address.encode()).hexdigest()
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return list(cached)
+    coordinates = _lookup_address(address)
+    cache.set(cache_key, coordinates, timeout=86400)
+    return coordinates
+
+
+def _lookup_address(address):
     try:
         parts = [part.strip() for part in address.split(",")]
         street_like = bool(re.search(r"\d|\b(AVENUE|AVE|ROAD|RD|STREET|BOULEVARD|BLVD|HIGHWAY|HWY|ROUTE|DRIVE|LANE|EXIT|INTERSTATE)\b", parts[0], re.IGNORECASE))
@@ -54,6 +67,18 @@ def geocode(address):
 
 
 def fetch_route(start, finish):
+    route_input = f"{start[0]},{start[1]};{finish[0]},{finish[1]}"
+    cache_key = "spotter:route:" + hashlib.sha256(route_input.encode()).hexdigest()
+    cached = cache.get(cache_key)
+    if cached is not None:
+        coordinates, distance_miles = cached
+        return [list(point) for point in coordinates], distance_miles
+    result = _fetch_route(start, finish)
+    cache.set(cache_key, result, timeout=3600)
+    return result
+
+
+def _fetch_route(start, finish):
     pair = f"{start[0]},{start[1]};{finish[0]},{finish[1]}"
     try:
         response = requests.get(f"{OSRM_URL}/{pair}", params={"overview": "full", "geometries": "geojson", "steps": "false"}, headers={"User-Agent": USER_AGENT}, timeout=12)
@@ -188,6 +213,6 @@ def plan_fuel_stops(coordinates, stations, max_range=500, mpg=10, route_distance
             raise RouteServiceError("Could not build a fuel plan for this route.")
         if cursor not in (0, n - 1):
             mile, station = nodes[cursor]
-            selected.append({"mile_from_start": round(mile, 1), "name": station.name, "address": station.address, "city": station.city, "state": station.state, "price_per_gallon": round(station.price_per_gallon, 3), "coordinates": [station.longitude, station.latitude], "coordinates_are_city_estimates": True})
+            selected.append({"mile_from_start": round(mile, 1), "name": station.name, "address": station.address, "city": station.city, "state": station.state, "price_per_gallon": round(station.price_per_gallon, 3), "coordinates": [station.longitude, station.latitude], "coordinate_source": getattr(station, "coordinate_source", "census_city"), "coordinates_are_city_estimates": True})
     selected.reverse()
-    return {"route_miles": round(total, 1), "fuel_stops": selected, "starting_fuel_price": start_price_source, "estimated_fuel_cost_usd": round(costs[-1], 2), "fuel_gallons": round(total / mpg, 2), "assumptions": ["Vehicle starts with a full tank with a 500-mile maximum range.", "Fuel use is 10 MPG.", "Starting fuel is priced using the nearest mapped assessment station to the start; later fuel is priced at each stop where that leg begins.", "Station locations use Census city representative points; individual truck-stop coordinates were not supplied.", "Prices are used as supplied and may not reflect current prices."]}
+    return {"route_miles": round(total, 1), "fuel_stops": selected, "starting_fuel_price": start_price_source, "estimated_fuel_cost_usd": round(costs[-1], 2), "fuel_gallons": round(total / mpg, 2), "assumptions": ["Vehicle starts with a full tank with a 500-mile maximum range.", "Fuel use is 10 MPG.", "Starting fuel is priced using the nearest mapped assessment station to the start; later fuel is priced at each stop where that leg begins.", "Station locations use city representative points from the Census or GeoNames; individual truck-stop coordinates were not supplied.", "Prices are used as supplied and may not reflect current prices."]}

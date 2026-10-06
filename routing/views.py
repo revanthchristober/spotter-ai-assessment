@@ -22,7 +22,7 @@ def plan_route(request):
         coordinates, road_miles = fetch_route(start, finish)
         stations = FuelStation.objects.filter(latitude__isnull=False, longitude__isnull=False)
         plan = plan_fuel_stops(coordinates, stations, route_distance_miles=road_miles)
-        plan.update({"start": start_name, "finish": finish_name, "map": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"kind": "route"}, "geometry": {"type": "LineString", "coordinates": coordinates}}, *[{"type": "Feature", "properties": {"kind": "fuel_stop", "name": stop["name"], "coordinates_are_city_estimates": True}, "geometry": {"type": "Point", "coordinates": stop["coordinates"]}} for stop in plan["fuel_stops"]]]}, "map_attribution": "© OpenStreetMap contributors; geocoding by Photon; routing by OSRM"})
+        plan.update({"start": start_name, "finish": finish_name, "map": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"kind": "route"}, "geometry": {"type": "LineString", "coordinates": coordinates}}, *[{"type": "Feature", "properties": {"kind": "fuel_stop", "name": stop["name"], "coordinate_source": stop["coordinate_source"], "coordinates_are_city_estimates": True}, "geometry": {"type": "Point", "coordinates": stop["coordinates"]}} for stop in plan["fuel_stops"]]]}, "map_attribution": "© OpenStreetMap contributors; geocoding by Photon; routing by OSRM"})
         return JsonResponse(plan)
     except json.JSONDecodeError:
         return JsonResponse({"error": "Request body must be valid JSON."}, status=400)

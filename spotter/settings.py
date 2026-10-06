@@ -9,6 +9,7 @@ ROOT_URLCONF = "spotter.urls"
 INSTALLED_APPS = ["django.contrib.contenttypes", "routing"]
 MIDDLEWARE = []
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
+CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "spotter-fuel-route", "OPTIONS": {"MAX_ENTRIES": 300}}}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
 TIME_ZONE = "UTC"

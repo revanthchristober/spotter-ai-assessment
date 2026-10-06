@@ -1,6 +1,6 @@
 # Spotter fuel route planner
 
-A Django 6.1 API that returns a US road route, estimated fuel stops, total trip fuel cost, and map-ready GeoJSON.
+A Django 6.1 API that returns a US road route, estimated fuel stops, total trip fuel cost, and map-ready GeoJSON. It is pinned to Django 6.1.2, the latest official release on October 6, 2026.
 
 ## Run locally
 
@@ -15,11 +15,11 @@ python manage.py import_fuel_prices
 python manage.py runserver
 ```
 
-The import uses the supplied `fuel-prices-for-be-assessment.csv` and the included 2025 US Census Gazetteer place file. It matches station city/state to Census representative points and skips unmatched cities. These are city-level estimates, not exact truck-stop coordinates, because the supplied price file contains no coordinates.
+The import uses the supplied `fuel-prices-for-be-assessment.csv`, the included 2025 US Census Gazetteer, and small Census county-subdivision and GeoNames fallbacks for U.S. cities the main Census file does not match. It only loads U.S. rows. City coordinates are estimates, not exact truck-stop locations, because the supplied price file contains no station coordinates.
 
 The assessment price attachment stays local and is excluded from GitHub. Place the CSV in the project root before running the import command.
 
-The import currently loads 7,117 of 8,151 price rows (6,261 unique station IDs). It skips 620 Canadian rows and 414 US rows whose city names are not in the included Census Gazetteer. The imported coordinates remain city-level estimates, not exact truck-stop locations.
+With the supplied attachment, the import loads 7,506 of 7,531 U.S. rows (6,602 unique station IDs), skips 620 non-U.S. rows, and leaves 25 U.S. rows unmatched because their city could not be mapped safely. This recovers 388 more U.S. rows than the Census places-only import. Each station record says whether its city point came from a Census place, Census county subdivision, or GeoNames. Individual station pins and the remaining 25 rows cannot be recovered from the attachment because it has no station coordinates. Re-running the importer replaces stale imported rows so the database matches the current attachment.
 
 ## API
 
@@ -29,7 +29,7 @@ The import currently loads 7,117 of 8,151 price rows (6,261 unique station IDs).
 {"start": "Dallas, TX", "finish": "Atlanta, GA"}
 ```
 
-The response includes `route_miles`, `fuel_stops`, `starting_fuel_price`, `estimated_fuel_cost_usd`, `fuel_gallons`, and `map` GeoJSON. It accepts US city names and street addresses. Photon resolves the two input locations with two parallel lookups, then one OSRM request returns the driving route. Station matching and fuel planning run locally. That is three external lookups per request. The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
+The response includes `route_miles`, `fuel_stops`, `starting_fuel_price`, `estimated_fuel_cost_usd`, `fuel_gallons`, and `map` GeoJSON. It accepts US city names and street addresses. Photon resolves the two input locations with two parallel lookups, then one OSRM request returns the driving route. Station matching and fuel planning run locally. An uncached request makes three external lookups; repeated lookups reuse the in-process cache (24 hours for geocoding, one hour for routing). The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
 
 For the demo, import [`Spotter-Route-Demo.postman_collection.json`](Spotter-Route-Demo.postman_collection.json) into Postman and start the server at `http://127.0.0.1:8000`.
 
@@ -41,9 +41,10 @@ Set `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS` before deployment. Turn on `D
 
 - [OSRM](https://project-osrm.org/docs/v5.7.0/api/) public demo server: free route lookup; it is community infrastructure and should not be treated as a production SLA.
 - [Photon](https://github.com/komoot/photon/blob/master/docs/api-v1.md): free city and address lookup backed by OpenStreetMap.
-- [US Census Gazetteer](https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.2025.html): city representative coordinates used locally.
+- [2025 US Census Gazetteer](https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.2025.html): city and county-subdivision representative coordinates used locally.
+- [GeoNames](https://www.geonames.org/export/): fallback city points for unmatched price-file cities. GeoNames data is provided under CC BY; attribution is included in [`data/SOURCES.md`](data/SOURCES.md).
 
-The local planner was timed once with 6,261 imported station records and 2,000 route points: about 0.16 seconds in this workspace, excluding the three network lookups. Network response time depends on the public services.
+Performance check on a live Dallas-to-Atlanta route: 8,314 route points and 6,602 stations took a median 236 ms (12 planner runs; slowest 304 ms), excluding network calls. The first end-to-end API request took 6.10 seconds and made the allowed three lookups; repeating it in the same process took 265 ms and made no extra external calls. Network time depends on Photon and OSRM availability.
 
 ## Checks
 

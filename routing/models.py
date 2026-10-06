@@ -9,6 +9,15 @@ class FuelStation(models.Model):
     price_per_gallon = models.FloatField()
     latitude = models.FloatField(null=True)
     longitude = models.FloatField(null=True)
+    coordinate_source = models.CharField(
+        max_length=20,
+        choices=(
+            ("census_city", "Census city"),
+            ("census_subdivision", "Census county subdivision"),
+            ("geonames_city", "GeoNames city"),
+        ),
+        default="census_city",
+    )
 
     class Meta:
         indexes = [models.Index(fields=["state", "city"]), models.Index(fields=["price_per_gallon"])]
