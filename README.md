@@ -19,7 +19,7 @@ The import uses the supplied `fuel-prices-for-be-assessment.csv`, the included 2
 
 The assessment price attachment stays local and is excluded from GitHub. Place the CSV in the project root before running the import command.
 
-With the supplied attachment, the import loads 7,506 of 7,531 U.S. rows (6,602 unique station IDs), skips 620 non-U.S. rows, and leaves 25 U.S. rows unmatched because their city could not be mapped safely. This recovers 388 more U.S. rows than the Census places-only import. Each station record says whether its city point came from a Census place, Census county subdivision, or GeoNames. Individual station pins and the remaining 25 rows cannot be recovered from the attachment because it has no station coordinates. Re-running the importer replaces stale imported rows so the database matches the current attachment.
+With the supplied attachment, the import loads 7,506 of 7,531 U.S. rows (6,602 unique station IDs), skips 620 non-U.S. rows, and leaves 25 U.S. rows unmatched because their city could not be mapped safely. This recovers 388 more U.S. rows than the Census places-only import. Each station record says whether its city point came from a Census place, Census county subdivision, or GeoNames. Individual station pins and the remaining 25 rows cannot be recovered from the attachment because it has no station coordinates. Re-running the importer replaces stale imported rows; if the new import would remove more than 5% of the current station set, it stops unless `--allow-shrink` is supplied.
 
 ## API
 
@@ -29,7 +29,9 @@ With the supplied attachment, the import loads 7,506 of 7,531 U.S. rows (6,602 u
 {"start": "Dallas, TX", "finish": "Atlanta, GA"}
 ```
 
-The response includes `route_miles`, `fuel_stops`, `starting_fuel_price`, `estimated_fuel_cost_usd`, `fuel_gallons`, and `map` GeoJSON. It accepts US city names and street addresses. Photon resolves the two input locations with two parallel lookups, then one OSRM request returns the driving route. Station matching and fuel planning run locally. An uncached request makes three external lookups; repeated lookups reuse the in-process cache (24 hours for geocoding, one hour for routing). The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
+The response includes `route_miles`, `fuel_stops`, `starting_fuel_price`, `estimated_fuel_cost_usd`, `fuel_gallons`, `warnings`, and `map` GeoJSON. It accepts US city names and street addresses up to 300 characters; JSON request bodies are limited to 16 KB. Recognized city/state pairs use the included Census gazetteer locally. Photon handles street addresses and city names that are not in that gazetteer, with both endpoint lookups running in parallel. One OSRM request returns the driving route; station matching and fuel planning run locally. A common uncached city-to-city request therefore makes one external call; a request needing Photon may make up to three total. Repeated lookups reuse the in-process cache (24 hours for geocoding, one hour for routing). The map geometry is suitable for rendering with a map library; show OpenStreetMap attribution with the route.
+
+Malformed request JSON or fields return `400`, an unsupported media type returns `415`, an oversized body returns `413`, an unresolved US place or impossible fuel plan returns `422`, and temporary or malformed upstream responses return `503` or `502`. If the nearest supplied starting-price record is over 25 miles away, the response includes a warning and its distance.
 
 For the demo, import [`Spotter-Route-Demo.postman_collection.json`](Spotter-Route-Demo.postman_collection.json) into Postman and start the server at `http://127.0.0.1:8000`.
 
@@ -44,7 +46,7 @@ Set `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS` before deployment. Turn on `D
 - [2025 US Census Gazetteer](https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.2025.html): city and county-subdivision representative coordinates used locally.
 - [GeoNames](https://www.geonames.org/export/): fallback city points for unmatched price-file cities. GeoNames data is provided under CC BY; attribution is included in [`data/SOURCES.md`](data/SOURCES.md).
 
-Performance check on a live Dallas-to-Atlanta route: 8,314 route points and 6,602 stations took a median 236 ms (12 planner runs; slowest 304 ms), excluding network calls. The first end-to-end API request took 6.10 seconds and made the allowed three lookups; repeating it in the same process took 265 ms and made no extra external calls. Network time depends on Photon and OSRM availability.
+One live Dallas-to-Atlanta request completed in 1.65 seconds and made one external call to OSRM; the city coordinates came from the local Census gazetteer. Network time still depends on OSRM, and requests that need Photon can be slower. Photon’s public demo may throttle requests and gives no availability guarantee, so this setup is suitable for the assessment demo, not a production uptime promise.
 
 ## Checks
 

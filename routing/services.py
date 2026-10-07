@@ -3,6 +3,10 @@ import math
 import re
 import hashlib
 import requests
+import csv
+import unicodedata
+from functools import lru_cache
+from pathlib import Path
 from django.core.cache import cache
 
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
@@ -15,7 +19,15 @@ STATE_NAMES = {
 
 
 class RouteServiceError(Exception):
-    pass
+    status_code = 422
+
+
+class UpstreamServiceUnavailable(RouteServiceError):
+    status_code = 503
+
+
+class UpstreamInvalidResponse(RouteServiceError):
+    status_code = 502
 
 
 def geocode(address):
@@ -24,46 +36,138 @@ def geocode(address):
     cached = cache.get(cache_key)
     if cached is not None:
         return list(cached)
+    census_coordinates = _lookup_census_city(address)
+    if census_coordinates is not None:
+        cache.set(cache_key, census_coordinates, timeout=86400)
+        return census_coordinates
     coordinates = _lookup_address(address)
     cache.set(cache_key, coordinates, timeout=86400)
     return coordinates
 
 
+def _normalize_place_name(value):
+    value = unicodedata.normalize("NFKD", value.strip().upper())
+    value = "".join(character for character in value if not unicodedata.combining(character))
+    value = re.sub(r"\s+(CITY|TOWN|TOWNSHIP|VILLAGE|CDP|MUNICIPALITY|BOROUGH|PLANTATION|CCD|MCD)$", "", value)
+    return re.sub(r"[^A-Z0-9]", "", value)
+
+
+@lru_cache(maxsize=1)
+def _census_city_index():
+    gazetteer = Path(__file__).resolve().parent.parent / "data" / "2025_Gaz_place_national.txt"
+    if not gazetteer.exists():
+        return {}
+    places = {}
+    with gazetteer.open(encoding="utf-8") as source:
+        columns = source.readline().strip().split("|")
+        for row in csv.DictReader(source, fieldnames=columns, delimiter="|"):
+            key = (_normalize_place_name(row["NAME"]), row["USPS"])
+            places.setdefault(key, []).append(
+                (row["FUNCSTAT"] == "A", [float(row["INTPTLONG"]), float(row["INTPTLAT"])])
+            )
+    return places
+
+
+def _lookup_census_city(address):
+    parts = [part.strip() for part in address.split(",")]
+    if len(parts) < 2 or re.search(r"\d|\b(AVENUE|AVE|ROAD|RD|STREET|BOULEVARD|BLVD|HIGHWAY|HWY|ROUTE|DRIVE|LANE|EXIT|INTERSTATE)\b", parts[0], re.IGNORECASE):
+        return None
+    state_part = parts[-1]
+    if state_part.upper() in {"US", "USA", "UNITED STATES", "UNITEDSTATES"} and len(parts) > 2:
+        state_part = parts[-2]
+    state = STATE_NAMES.get(state_part.upper())
+    if state is None:
+        state_names = {name.lower(): name for name in STATE_NAMES.values()}
+        state = state_names.get(state_part.lower())
+    if state is None:
+        return None
+    state_code = state_part.upper()
+    if state_code not in STATE_NAMES:
+        state_code = next((abbr for abbr, name in STATE_NAMES.items() if name == state), "")
+    matches = _census_city_index().get((_normalize_place_name(parts[0]), state_code), [])
+    active_places = [coordinates for is_active, coordinates in matches if is_active]
+    candidates = active_places or [coordinates for _, coordinates in matches]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
 def _lookup_address(address):
     try:
         parts = [part.strip() for part in address.split(",")]
+        location_parts = parts
+        has_country_suffix = (
+            len(location_parts) > 1
+            and location_parts[-1].upper() in {"US", "USA", "UNITED STATES", "UNITEDSTATES"}
+        )
+        if has_country_suffix:
+            location_parts = location_parts[:-1]
         street_like = bool(re.search(r"\d|\b(AVENUE|AVE|ROAD|RD|STREET|BOULEVARD|BLVD|HIGHWAY|HWY|ROUTE|DRIVE|LANE|EXIT|INTERSTATE)\b", parts[0], re.IGNORECASE))
-        params = {"q": f"{address}, USA", "limit": 10, "countrycode": "us"}
+        params = {"q": address if has_country_suffix else f"{address}, USA", "limit": 10, "countrycode": "us"}
         if not street_like:
             params["layer"] = "city"
         response = requests.get(GEOCODER_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=8)
         response.raise_for_status()
-        features = response.json().get("features", [])
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise UpstreamInvalidResponse("The location lookup service returned invalid data.") from exc
+        features = data.get("features") if isinstance(data, dict) else None
+        if not isinstance(features, list):
+            raise UpstreamInvalidResponse("The location lookup service returned invalid data.")
         state_names = {name.lower(): name for name in STATE_NAMES.values()}
-        final_part = parts[-1].upper() if len(parts) > 1 else ""
-        if final_part in {"US", "USA", "UNITED STATES", "UNITEDSTATES"} and len(parts) > 2:
-            final_part = parts[-2]
-        wanted_state = final_part.upper()
-        accepted_state = STATE_NAMES.get(wanted_state, state_names.get(final_part.lower(), final_part))
-        wanted_city = None if street_like else re.sub(r"[^a-z0-9]", "", parts[0].lower())
+        final_part = location_parts[-1].upper() if len(location_parts) > 1 else ""
+        accepted_state = STATE_NAMES.get(final_part, state_names.get(final_part.lower(), ""))
+        if street_like:
+            if accepted_state and len(location_parts) > 2:
+                city_part = location_parts[-2]
+            elif not accepted_state and len(location_parts) > 1:
+                city_part = location_parts[-1]
+            else:
+                city_part = None
+            wanted_city = re.sub(r"[^a-z0-9]", "", city_part.lower()) if city_part else None
+        else:
+            wanted_city = re.sub(r"[^a-z0-9]", "", location_parts[0].lower())
         matches = []
+        valid_feature_count = 0
         for feature in features:
+            if not isinstance(feature, dict):
+                continue
             props = feature.get("properties", {})
-            if props.get("countrycode", "").upper() != "US":
+            geometry = feature.get("geometry", {})
+            if not isinstance(props, dict) or not isinstance(geometry, dict):
                 continue
-            names = (props.get("name", ""), props.get("city", ""))
-            if wanted_city and not any(re.sub(r"[^a-z0-9]", "", name.lower()) == wanted_city for name in names if name):
+            country_code = props.get("countrycode")
+            if not isinstance(country_code, str):
                 continue
-            if accepted_state and props.get("state", "").lower() != accepted_state.lower():
+            valid_feature_count += 1
+            if country_code.upper() != "US":
+                continue
+            names = tuple(name for name in (props.get("name"), props.get("city")) if isinstance(name, str))
+            if wanted_city and not any(re.sub(r"[^a-z0-9]", "", name.lower()) == wanted_city for name in names):
+                continue
+            state = props.get("state")
+            if accepted_state and (not isinstance(state, str) or state.lower() != accepted_state.lower()):
                 continue
             matches.append(feature)
+        if features and valid_feature_count == 0:
+            raise UpstreamInvalidResponse("The location lookup service returned invalid data.")
         if not matches:
             raise RouteServiceError(f"Could not find a US location for: {address}")
-        return [float(value) for value in matches[0]["geometry"]["coordinates"]]
+        try:
+            coordinates = [float(value) for value in matches[0]["geometry"]["coordinates"]]
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            raise UpstreamInvalidResponse("The location lookup service returned invalid coordinates.") from exc
+        if len(coordinates) != 2 or not all(math.isfinite(value) for value in coordinates):
+            raise UpstreamInvalidResponse("The location lookup service returned invalid coordinates.")
+        longitude, latitude = coordinates
+        if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
+            raise UpstreamInvalidResponse("The location lookup service returned invalid coordinates.")
+        return coordinates
     except RouteServiceError:
         raise
-    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-        raise RouteServiceError("The location lookup service is unavailable or returned invalid data.") from exc
+    except requests.RequestException as exc:
+        raise UpstreamServiceUnavailable("The location lookup service is temporarily unavailable.") from exc
 
 
 def fetch_route(start, finish):
@@ -84,12 +188,37 @@ def _fetch_route(start, finish):
         response = requests.get(f"{OSRM_URL}/{pair}", params={"overview": "full", "geometries": "geojson", "steps": "false"}, headers={"User-Agent": USER_AGENT}, timeout=12)
         response.raise_for_status()
         data = response.json()
+        if not isinstance(data, dict):
+            raise UpstreamInvalidResponse("The route service returned invalid route data.")
         if data.get("code") != "Ok" or not data.get("routes"):
             raise RouteServiceError("No drivable route was found between those locations.")
         route = data["routes"][0]
-        return route["geometry"]["coordinates"], route["distance"] * MILES_PER_METER
-    except (requests.RequestException, ValueError, KeyError) as exc:
-        raise RouteServiceError("The route service is unavailable or returned invalid data.") from exc
+        if not isinstance(route, dict) or not isinstance(route.get("geometry"), dict):
+            raise UpstreamInvalidResponse("The route service returned invalid route data.")
+        coordinates = route["geometry"]["coordinates"]
+        distance = float(route["distance"]) * MILES_PER_METER
+        if not isinstance(coordinates, list) or len(coordinates) < 2 or not math.isfinite(distance) or distance < 0:
+            raise UpstreamInvalidResponse("The route service returned invalid route data.")
+        normalized_coordinates = []
+        for point in coordinates:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                raise UpstreamInvalidResponse("The route service returned invalid route data.")
+            longitude, latitude = float(point[0]), float(point[1])
+            if (
+                not math.isfinite(longitude)
+                or not math.isfinite(latitude)
+                or not -180 <= longitude <= 180
+                or not -90 <= latitude <= 90
+            ):
+                raise UpstreamInvalidResponse("The route service returned invalid route data.")
+            normalized_coordinates.append([longitude, latitude])
+        return normalized_coordinates, distance
+    except RouteServiceError:
+        raise
+    except requests.RequestException as exc:
+        raise UpstreamServiceUnavailable("The route service is temporarily unavailable.") from exc
+    except (ValueError, TypeError, KeyError) as exc:
+        raise UpstreamInvalidResponse("The route service returned invalid route data.") from exc
 
 
 def _segment_miles(a, b):
@@ -182,13 +311,14 @@ def plan_fuel_stops(coordinates, stations, max_range=500, mpg=10, route_distance
         ),
     )
     start_price = start_station.price_per_gallon
+    start_distance = _segment_miles(origin, (start_station.longitude, start_station.latitude))
     start_price_source = {
         "name": start_station.name,
         "city": start_station.city,
         "state": start_station.state,
         "price_per_gallon": round(start_price, 3),
         "distance_from_start_miles": round(
-            _segment_miles(origin, (start_station.longitude, start_station.latitude)), 1
+            start_distance, 1
         ),
     }
     for j in range(1, n):
@@ -215,4 +345,10 @@ def plan_fuel_stops(coordinates, stations, max_range=500, mpg=10, route_distance
             mile, station = nodes[cursor]
             selected.append({"mile_from_start": round(mile, 1), "name": station.name, "address": station.address, "city": station.city, "state": station.state, "price_per_gallon": round(station.price_per_gallon, 3), "coordinates": [station.longitude, station.latitude], "coordinate_source": getattr(station, "coordinate_source", "census_city"), "coordinates_are_city_estimates": True})
     selected.reverse()
-    return {"route_miles": round(total, 1), "fuel_stops": selected, "starting_fuel_price": start_price_source, "estimated_fuel_cost_usd": round(costs[-1], 2), "fuel_gallons": round(total / mpg, 2), "assumptions": ["Vehicle starts with a full tank with a 500-mile maximum range.", "Fuel use is 10 MPG.", "Starting fuel is priced using the nearest mapped assessment station to the start; later fuel is priced at each stop where that leg begins.", "Station locations use city representative points from the Census or GeoNames; individual truck-stop coordinates were not supplied.", "Prices are used as supplied and may not reflect current prices."]}
+    warnings = []
+    if start_distance > 25:
+        warnings.append(
+            "No supplied fuel-price location is within 25 miles of the start; "
+            "the starting price uses a more distant city estimate."
+        )
+    return {"route_miles": round(total, 1), "fuel_stops": selected, "starting_fuel_price": start_price_source, "estimated_fuel_cost_usd": round(costs[-1], 2), "fuel_gallons": round(total / mpg, 2), "warnings": warnings, "assumptions": ["Vehicle starts with a full tank with a 500-mile maximum range.", "Fuel use is 10 MPG.", "Starting fuel is priced using the nearest mapped assessment station to the start; later fuel is priced at each stop where that leg begins.", "Station locations use city representative points from the Census or GeoNames; individual truck-stop coordinates were not supplied.", "Prices are used as supplied and may not reflect current prices."]}
